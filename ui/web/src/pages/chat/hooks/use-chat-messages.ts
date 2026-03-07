@@ -26,6 +26,7 @@ export function useChatMessages(sessionKey: string, agentId: string) {
   const expectingRunRef = useRef(false);
   const streamRef = useRef("");
   const thinkingRef = useRef("");
+  const toolStreamRef = useRef<ToolStreamEntry[]>([]);
   const agentIdRef = useRef(agentId);
   agentIdRef.current = agentId;
 
@@ -44,6 +45,7 @@ export function useChatMessages(sessionKey: string, agentId: string) {
     expectingRunRef.current = false;
     streamRef.current = "";
     thinkingRef.current = "";
+    toolStreamRef.current = [];
   }
 
   // Load history (no loading spinner — the empty state placeholder is shown instead)
@@ -87,6 +89,13 @@ export function useChatMessages(sessionKey: string, agentId: string) {
       const event = payload as AgentEventPayload;
       if (!event) return;
 
+      // Announce run.completed: reload history when a subagent/delegate announce finishes
+      // for the current agent (these runs aren't tracked by runIdRef).
+      if (event.type === "run.completed" && event.runKind === "announce" && event.agentId === agentIdRef.current) {
+        loadHistory();
+        return;
+      }
+
       // Capture run.started when we are expecting a run for this agent
       if (event.type === "run.started") {
         if (expectingRunRef.current && event.agentId === agentIdRef.current) {
@@ -98,6 +107,7 @@ export function useChatMessages(sessionKey: string, agentId: string) {
           setToolStream([]);
           streamRef.current = "";
           thinkingRef.current = "";
+          toolStreamRef.current = [];
         }
         return;
       }
@@ -123,20 +133,24 @@ export function useChatMessages(sessionKey: string, agentId: string) {
             toolCallId: event.payload?.id ?? "",
             runId: event.runId,
             name: event.payload?.name ?? "tool",
+            arguments: event.payload?.arguments,
             phase: "calling",
             startedAt: Date.now(),
             updatedAt: Date.now(),
           };
-          setToolStream((prev) => [...prev, entry]);
+          toolStreamRef.current = [...toolStreamRef.current, entry];
+          setToolStream(toolStreamRef.current);
           break;
         }
         case "tool.result": {
+          const isError = event.payload?.is_error;
           setToolStream((prev) =>
             prev.map((t) =>
               t.toolCallId === event.payload?.id
                 ? {
                     ...t,
-                    phase: event.payload?.is_error ? "error" : "completed",
+                    phase: isError ? "error" : "completed",
+                    errorContent: isError ? event.payload?.content : undefined,
                     updatedAt: Date.now(),
                   }
                 : t,
@@ -147,12 +161,28 @@ export function useChatMessages(sessionKey: string, agentId: string) {
         case "run.completed": {
           setIsRunning(false);
           runIdRef.current = null;
-          loadHistory();
+
+          // If we have streamed text and no tool calls, promote it directly
+          // to avoid a flash caused by loadHistory() replacing the DOM.
+          // When tools were used, reload to get structured tool_calls data.
+          const hadTools = toolStreamRef.current.length > 0;
+          const streamed = streamRef.current;
+
           setStreamText(null);
           setThinkingText(null);
           setToolStream([]);
           streamRef.current = "";
           thinkingRef.current = "";
+          toolStreamRef.current = [];
+
+          if (streamed && !hadTools) {
+            setMessages((prev) => [
+              ...prev,
+              { role: "assistant", content: streamed, timestamp: Date.now() },
+            ]);
+          } else {
+            loadHistory();
+          }
           break;
         }
         case "run.failed": {

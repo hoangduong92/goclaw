@@ -23,8 +23,8 @@ export interface SessionPreview {
 export interface Message {
   role: "user" | "assistant" | "tool";
   content: string;
-  toolCalls?: ToolCall[];
-  toolCallId?: string;
+  tool_calls?: ToolCall[];
+  tool_call_id?: string;
 }
 
 export interface ToolCall {

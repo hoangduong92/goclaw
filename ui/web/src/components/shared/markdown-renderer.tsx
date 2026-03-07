@@ -65,6 +65,19 @@ export function MarkdownRenderer({ content, className }: MarkdownRendererProps) 
               </a>
             );
           },
+          img({ src, alt, ...props }) {
+            return (
+              <a href={src} target="_blank" rel="noopener noreferrer">
+                <img
+                  src={src}
+                  alt={alt ?? "image"}
+                  className="max-w-sm rounded-lg border shadow-sm"
+                  loading="lazy"
+                  {...props}
+                />
+              </a>
+            );
+          },
           table({ children, ...props }) {
             return (
               <div className="my-2 overflow-x-auto">

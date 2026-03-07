@@ -1,4 +1,5 @@
-import { Wrench, Check, AlertTriangle, Loader2 } from "lucide-react";
+import { useState } from "react";
+import { Wrench, Check, AlertTriangle, Loader2, ChevronRight } from "lucide-react";
 import type { ToolStreamEntry } from "@/types/chat";
 
 interface ToolCallCardProps {
@@ -6,11 +7,41 @@ interface ToolCallCardProps {
 }
 
 export function ToolCallCard({ entry }: ToolCallCardProps) {
+  const [expanded, setExpanded] = useState(false);
+  const hasArgs = entry.arguments && Object.keys(entry.arguments).length > 0;
+  const hasError = entry.phase === "error" && !!entry.errorContent;
+  const canExpand = hasArgs || hasError;
+
   return (
-    <div className="my-1 flex items-center gap-2 rounded-md border bg-muted/50 px-3 py-2 text-sm">
-      <ToolIcon phase={entry.phase} />
-      <span className="font-medium">{entry.name}</span>
-      <PhaseLabel phase={entry.phase} />
+    <div className="my-1 rounded-md border bg-muted/50 overflow-hidden">
+      <button
+        type="button"
+        onClick={() => canExpand && setExpanded(!expanded)}
+        className={`flex items-start gap-2 w-full text-left px-3 py-2 text-sm ${
+          canExpand ? "cursor-pointer hover:bg-muted/80 transition-colors" : "cursor-default"
+        }`}
+      >
+        <ToolIcon phase={entry.phase} />
+        <span className="font-mono text-xs break-all">{entry.name}</span>
+        <PhaseLabel phase={entry.phase} />
+        {canExpand && (
+          <ChevronRight
+            className={`h-3 w-3 shrink-0 text-muted-foreground transition-transform ${
+              expanded ? "rotate-90" : ""
+            }`}
+          />
+        )}
+      </button>
+      {expanded && canExpand && (
+        <div className="px-3 pb-2 border-t bg-muted/30 text-[11px] overflow-auto max-h-48">
+          {hasError && (
+            <pre className="text-red-500 whitespace-pre-wrap">{entry.errorContent}</pre>
+          )}
+          {hasArgs && (
+            <pre className="text-muted-foreground whitespace-pre-wrap break-words">{JSON.stringify(entry.arguments, null, 2)}</pre>
+          )}
+        </div>
+      )}
     </div>
   );
 }

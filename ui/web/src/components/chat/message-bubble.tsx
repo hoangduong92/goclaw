@@ -1,14 +1,15 @@
 import { useState } from "react";
-import { Bot, User, Wrench, ChevronRight } from "lucide-react";
+import { Bot, User, ChevronRight, Check, AlertTriangle } from "lucide-react";
 import { MessageContent } from "./message-content";
 import type { ChatMessage } from "@/types/chat";
 import type { ToolCall } from "@/types/session";
 
 interface MessageBubbleProps {
   message: ChatMessage;
+  toolCallErrors?: Map<string, string>;
 }
 
-export function MessageBubble({ message }: MessageBubbleProps) {
+export function MessageBubble({ message, toolCallErrors }: MessageBubbleProps) {
   const isUser = message.role === "user";
   const isTool = message.role === "tool";
 
@@ -17,7 +18,7 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   }
 
   const hasContent = !!message.content?.trim();
-  const hasToolCalls = message.toolCalls && message.toolCalls.length > 0;
+  const hasToolCalls = message.tool_calls && message.tool_calls.length > 0;
 
   // Skip assistant messages with neither text nor tool calls
   if (!isUser && !hasContent && !hasToolCalls) {
@@ -28,8 +29,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   if (!isUser && !hasContent && hasToolCalls) {
     return (
       <div className="space-y-1">
-        {message.toolCalls!.map((tc) => (
-          <ToolCallItem key={tc.id} toolCall={tc} />
+        {message.tool_calls!.map((tc) => (
+          <ToolCallItem key={tc.id} toolCall={tc} isError={toolCallErrors?.has(tc.id)} errorContent={toolCallErrors?.get(tc.id)} />
         ))}
       </div>
     );
@@ -54,8 +55,8 @@ export function MessageBubble({ message }: MessageBubbleProps) {
       >
         {hasToolCalls && (
           <div className="mb-2 space-y-1">
-            {message.toolCalls!.map((tc) => (
-              <ToolCallItem key={tc.id} toolCall={tc} compact />
+            {message.tool_calls!.map((tc) => (
+              <ToolCallItem key={tc.id} toolCall={tc} compact isError={toolCallErrors?.has(tc.id)} errorContent={toolCallErrors?.get(tc.id)} />
             ))}
           </div>
         )}
@@ -73,37 +74,44 @@ export function MessageBubble({ message }: MessageBubbleProps) {
   );
 }
 
-function ToolCallItem({ toolCall, compact }: { toolCall: ToolCall; compact?: boolean }) {
+function ToolCallItem({ toolCall, compact, isError, errorContent }: { toolCall: ToolCall; compact?: boolean; isError?: boolean; errorContent?: string }) {
   const [expanded, setExpanded] = useState(false);
   const hasArgs = toolCall.arguments && Object.keys(toolCall.arguments).length > 0;
+  const canExpand = hasArgs || (isError && !!errorContent);
+  const iconSize = compact ? "h-3 w-3" : "h-3.5 w-3.5";
+
+  const StatusIcon = isError
+    ? <AlertTriangle className={`${iconSize} shrink-0 text-red-500`} />
+    : <Check className={`${iconSize} shrink-0 text-green-500`} />;
 
   return (
     <div className={compact ? "" : "rounded-md border bg-muted/50 overflow-hidden"}>
       <button
         type="button"
-        onClick={() => hasArgs && setExpanded(!expanded)}
+        onClick={() => canExpand && setExpanded(!expanded)}
         className={`flex items-center gap-1.5 w-full text-left ${
           compact
             ? "text-xs text-muted-foreground py-0.5"
             : "px-3 py-1.5 text-sm hover:bg-muted/80 transition-colors"
-        } ${hasArgs ? "cursor-pointer" : "cursor-default"}`}
+        } ${canExpand ? "cursor-pointer" : "cursor-default"}`}
       >
-        {compact ? (
-          <Wrench className="h-3 w-3 shrink-0" />
-        ) : (
-          <Wrench className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-        )}
+        {StatusIcon}
         <span className={`font-mono truncate ${compact ? "" : "text-xs"}`}>{toolCall.name}</span>
-        {hasArgs && (
+        {canExpand && (
           <ChevronRight className={`h-3 w-3 shrink-0 ml-auto text-muted-foreground transition-transform ${expanded ? "rotate-90" : ""}`} />
         )}
       </button>
-      {expanded && hasArgs && (
-        <pre className={`text-[11px] text-muted-foreground overflow-x-auto ${
+      {expanded && canExpand && (
+        <div className={`text-[11px] overflow-auto max-h-48 ${
           compact ? "pl-4.5 pb-1" : "px-3 pb-2 border-t bg-muted/30"
         }`}>
-          {JSON.stringify(toolCall.arguments, null, 2)}
-        </pre>
+          {isError && errorContent && (
+            <pre className="text-red-500 whitespace-pre-wrap">{errorContent}</pre>
+          )}
+          {hasArgs && (
+            <pre className="text-muted-foreground">{JSON.stringify(toolCall.arguments, null, 2)}</pre>
+          )}
+        </div>
       )}
     </div>
   );

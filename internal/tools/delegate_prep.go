@@ -174,6 +174,7 @@ func (dm *DelegateManager) prepareDelegation(ctx context.Context, opts DelegateO
 		OriginChatID:     chatID,
 		OriginPeerKind:   peerKind,
 		OriginLocalKey:   localKey,
+		OriginSessionKey: ToolSessionKeyFromCtx(ctx),
 		OriginTraceID:    tracing.TraceIDFromContext(ctx),
 		OriginRootSpanID: tracing.ParentSpanIDFromContext(ctx),
 		TeamTaskID:       opts.TeamTaskID,

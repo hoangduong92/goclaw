@@ -161,6 +161,9 @@ func (dm *DelegateManager) DelegateAsync(ctx context.Context, opts DelegateOpts)
 				if task.OriginLocalKey != "" {
 					announceMeta["origin_local_key"] = task.OriginLocalKey
 				}
+				if task.OriginSessionKey != "" {
+					announceMeta["origin_session_key"] = task.OriginSessionKey
+				}
 				// Emit announce event so WS clients know all results are being sent to lead.
 				hasMedia := len(artifacts.Media) > 0
 				var announceSummaries []protocol.DelegationAnnounceResultSummary

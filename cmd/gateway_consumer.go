@@ -5,6 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"mime"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -390,11 +392,13 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 				continue
 			}
 
-			// Use SAME session as user's original chat so agent has context.
-			sessionKey := sessions.BuildScopedSessionKey(parentAgent, origChannel, sessions.PeerKind(origPeerKind), msg.ChatID, cfg.Sessions.Scope, cfg.Sessions.DmScope, cfg.Sessions.MainKey)
-
-			// Override session key for forum topics / DM threads (same logic as main lane).
-			sessionKey = overrideSessionKeyFromLocalKey(sessionKey, origLocalKey, parentAgent, origChannel, msg.ChatID, origPeerKind)
+			// Use exact origin session key if available (WS uses non-standard format).
+			sessionKey := msg.Metadata["origin_session_key"]
+			if sessionKey == "" {
+				// Fallback: rebuild session key from origin metadata (works for Telegram, Discord, etc.)
+				sessionKey = sessions.BuildScopedSessionKey(parentAgent, origChannel, sessions.PeerKind(origPeerKind), msg.ChatID, cfg.Sessions.Scope, cfg.Sessions.DmScope, cfg.Sessions.MainKey)
+				sessionKey = overrideSessionKeyFromLocalKey(sessionKey, origLocalKey, parentAgent, origChannel, msg.ChatID, origPeerKind)
+			}
 
 			slog.Info("subagent announce → scheduler (subagent lane)",
 				"subagent", msg.SenderID,
@@ -421,10 +425,25 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			outMeta := buildAnnounceOutMeta(origLocalKey)
 
 			// Build request before goroutine to capture msg fields.
+			// WS: convert media to markdown URLs inline (no outbound channel handler).
+			// Must happen BEFORE the run so the agent loop saves images in the session
+			// before run.completed fires — avoids race with frontend loadHistory().
+			fwdMedia := msg.Media
+			announceMessage := msg.Content
+			wsMediaSuffix := ""
+			if origChannel == "ws" && len(msg.Media) > 0 {
+				mdMedia := mediaToMarkdownFromPaths(msg.Media, cfg.WorkspacePath(), cfg)
+				if mdMedia != "" {
+					announceMessage += "\n\n[Image URLs for web display — include these EXACTLY as-is at the end of your response]" + mdMedia
+					wsMediaSuffix = mdMedia
+				}
+				fwdMedia = nil // already embedded as markdown
+			}
+
 			announceReq := agent.RunRequest{
 				SessionKey:       sessionKey,
-				Message:          msg.Content,
-				ForwardMedia:     msg.Media,
+				Message:          announceMessage,
+				ForwardMedia:     fwdMedia,
 				Channel:          origChannel,
 				ChatID:           msg.ChatID,
 				PeerKind:         origPeerKind,
@@ -432,15 +451,15 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 				UserID:           announceUserID,
 				RunID:            fmt.Sprintf("announce-%s", msg.SenderID),
 				RunKind:          "announce",
+				HideInput:        true, // don't persist raw system message in chat history
 				Stream:           false,
 				ParentTraceID:    parentTraceID,
 				ParentRootSpanID: parentRootSpanID,
 			}
-
 			// Handle announce asynchronously with per-session serialization.
 			// The mutex ensures concurrent announces for the same session wait for
 			// each other, so each reads up-to-date session history.
-			go func(sessionKey, origCh, chatID, senderID, label string, meta map[string]string, req agent.RunRequest) {
+			go func(sessionKey, origCh, chatID, senderID, label string, meta map[string]string, req agent.RunRequest, mediaSuffix string) {
 				mu := getAnnounceMu(sessionKey)
 				mu.Lock()
 				defer mu.Unlock()
@@ -477,6 +496,12 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 				if isSilent {
 					announceContent = "" // suppress NO_REPLY text but still send media
 				}
+
+				// Fallback: if LLM stripped the image markdown URLs, append them.
+				if mediaSuffix != "" && !strings.Contains(announceContent, mediaSuffix) {
+					announceContent += mediaSuffix
+				}
+
 				outMsg := bus.OutboundMessage{
 					Channel:  origCh,
 					ChatID:   chatID,
@@ -490,7 +515,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 					})
 				}
 				msgBus.PublishOutbound(outMsg)
-			}(sessionKey, origChannel, msg.ChatID, msg.SenderID, msg.Metadata["subagent_label"], outMeta, announceReq)
+			}(sessionKey, origChannel, msg.ChatID, msg.SenderID, msg.Metadata["subagent_label"], outMeta, announceReq, wsMediaSuffix)
 			continue
 		}
 
@@ -513,10 +538,13 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 				continue
 			}
 
-			sessionKey := sessions.BuildScopedSessionKey(parentAgent, origChannel, sessions.PeerKind(origPeerKind), msg.ChatID, cfg.Sessions.Scope, cfg.Sessions.DmScope, cfg.Sessions.MainKey)
-
-			// Override session key for forum topics / DM threads.
-			sessionKey = overrideSessionKeyFromLocalKey(sessionKey, origLocalKey, parentAgent, origChannel, msg.ChatID, origPeerKind)
+			// Use exact origin session key if available (WS uses non-standard format).
+			sessionKey := msg.Metadata["origin_session_key"]
+			if sessionKey == "" {
+				// Fallback: rebuild session key from origin metadata (works for Telegram, Discord, etc.)
+				sessionKey = sessions.BuildScopedSessionKey(parentAgent, origChannel, sessions.PeerKind(origPeerKind), msg.ChatID, cfg.Sessions.Scope, cfg.Sessions.DmScope, cfg.Sessions.MainKey)
+				sessionKey = overrideSessionKeyFromLocalKey(sessionKey, origLocalKey, parentAgent, origChannel, msg.ChatID, origPeerKind)
+			}
 
 			slog.Info("delegate announce → scheduler (delegate lane)",
 				"delegation", msg.SenderID,
@@ -541,10 +569,23 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 			// Build outbound metadata for topic/thread routing.
 			outMeta := buildAnnounceOutMeta(origLocalKey)
 
+			// WS: convert media to markdown URLs inline (same as subagent announce).
+			fwdMedia := msg.Media
+			announceMessage := msg.Content
+			wsMediaSuffix := ""
+			if origChannel == "ws" && len(msg.Media) > 0 {
+				mdMedia := mediaToMarkdownFromPaths(msg.Media, cfg.WorkspacePath(), cfg)
+				if mdMedia != "" {
+					announceMessage += "\n\n[Image URLs for web display — include these EXACTLY as-is at the end of your response]" + mdMedia
+					wsMediaSuffix = mdMedia
+				}
+				fwdMedia = nil
+			}
+
 			announceReq := agent.RunRequest{
 				SessionKey:       sessionKey,
-				Message:          msg.Content,
-				ForwardMedia:     msg.Media,
+				Message:          announceMessage,
+				ForwardMedia:     fwdMedia,
 				Channel:          origChannel,
 				ChatID:           msg.ChatID,
 				PeerKind:         origPeerKind,
@@ -552,13 +593,14 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 				UserID:           announceUserID,
 				RunID:            fmt.Sprintf("delegate-announce-%s", msg.Metadata["delegation_id"]),
 				RunKind:          "announce",
+				HideInput:        true, // don't persist raw system message in chat history
 				Stream:           false,
 				ParentTraceID:    parentTraceID,
 				ParentRootSpanID: parentRootSpanID,
 			}
 
 			// Same per-session serialization as subagent announce above.
-			go func(sessionKey, origCh, chatID, senderID string, meta map[string]string, req agent.RunRequest) {
+			go func(sessionKey, origCh, chatID, senderID string, meta map[string]string, req agent.RunRequest, mediaSuffix string) {
 				mu := getAnnounceMu(sessionKey)
 				mu.Lock()
 				defer mu.Unlock()
@@ -588,6 +630,12 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 				if isSilent {
 					announceContent = "" // suppress NO_REPLY text but still send media
 				}
+
+				// Fallback: if LLM stripped the image markdown URLs, append them.
+				if mediaSuffix != "" && !strings.Contains(announceContent, mediaSuffix) {
+					announceContent += mediaSuffix
+				}
+
 				outMsg := bus.OutboundMessage{
 					Channel:  origCh,
 					ChatID:   chatID,
@@ -601,7 +649,7 @@ func consumeInboundMessages(ctx context.Context, msgBus *bus.MessageBus, agents 
 					})
 				}
 				msgBus.PublishOutbound(outMsg)
-			}(sessionKey, origChannel, msg.ChatID, msg.SenderID, outMeta, announceReq)
+			}(sessionKey, origChannel, msg.ChatID, msg.SenderID, outMeta, announceReq, wsMediaSuffix)
 			continue
 		}
 
@@ -862,6 +910,69 @@ func overrideSessionKeyFromLocalKey(sessionKey, localKey, agentID, channel, chat
 
 // buildAnnounceOutMeta builds outbound metadata for announce messages so that
 // Send() can route replies to the correct forum topic or DM thread.
+// mediaToMarkdown converts media results to markdown image/link syntax using the
+// /v1/files/ HTTP endpoint. Used for WS channel where outbound media attachments
+// are not supported (no channel handler). Returns empty string if no media.
+func mediaToMarkdown(media []agent.MediaResult, workspace string, cfg *config.Config) string {
+	if len(media) == 0 {
+		return ""
+	}
+
+	scheme := "http"
+	if cfg.Tailscale.EnableTLS {
+		scheme = "https"
+	}
+	host := cfg.Gateway.Host
+	if host == "" || host == "0.0.0.0" {
+		host = "localhost"
+	}
+	baseURL := fmt.Sprintf("%s://%s:%d/v1/files", scheme, host, cfg.Gateway.Port)
+	tokenQuery := ""
+	if cfg.Gateway.Token != "" {
+		tokenQuery = "?token=" + cfg.Gateway.Token
+	}
+
+	cleanRoot := filepath.Clean(workspace)
+	var parts []string
+	for _, mr := range media {
+		cleanPath := filepath.Clean(mr.Path)
+		relPath, err := filepath.Rel(cleanRoot, cleanPath)
+		if err != nil || strings.HasPrefix(relPath, "..") {
+			continue
+		}
+		fileURL := baseURL + "/" + relPath + tokenQuery
+		if strings.HasPrefix(mr.ContentType, "image/") {
+			parts = append(parts, fmt.Sprintf("![image](%s)", fileURL))
+		} else {
+			parts = append(parts, fmt.Sprintf("[%s](%s)", filepath.Base(mr.Path), fileURL))
+		}
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	return "\n\n" + strings.Join(parts, "\n")
+}
+
+// mediaToMarkdownFromPaths is like mediaToMarkdown but accepts raw file paths
+// ([]string from bus.InboundMessage.Media) instead of []agent.MediaResult.
+func mediaToMarkdownFromPaths(paths []string, workspace string, cfg *config.Config) string {
+	if len(paths) == 0 {
+		return ""
+	}
+	media := make([]agent.MediaResult, 0, len(paths))
+	for _, p := range paths {
+		ct := mime.TypeByExtension(filepath.Ext(p))
+		if ct == "" {
+			ct = "application/octet-stream"
+		}
+		media = append(media, agent.MediaResult{
+			Path:        p,
+			ContentType: ct,
+		})
+	}
+	return mediaToMarkdown(media, workspace, cfg)
+}
+
 func buildAnnounceOutMeta(localKey string) map[string]string {
 	if localKey == "" {
 		return nil

@@ -21,7 +21,8 @@ const (
 	ctxSandboxKey toolContextKey = "tool_sandbox_key"
 	ctxAsyncCB    toolContextKey = "tool_async_cb"
 	ctxWorkspace  toolContextKey = "tool_workspace"
-	ctxAgentKey   toolContextKey = "tool_agent_key"
+	ctxAgentKey    toolContextKey = "tool_agent_key"
+	ctxSessionKey  toolContextKey = "tool_session_key" // origin session key for announce routing
 )
 
 func WithToolChannel(ctx context.Context, channel string) context.Context {
@@ -98,6 +99,18 @@ func WithToolAgentKey(ctx context.Context, key string) context.Context {
 
 func ToolAgentKeyFromCtx(ctx context.Context) string {
 	v, _ := ctx.Value(ctxAgentKey).(string)
+	return v
+}
+
+// WithToolSessionKey injects the parent's session key so subagent announce
+// can route results back to the exact same session (required for WS where
+// session keys don't follow BuildScopedSessionKey format).
+func WithToolSessionKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, ctxSessionKey, key)
+}
+
+func ToolSessionKeyFromCtx(ctx context.Context) string {
+	v, _ := ctx.Value(ctxSessionKey).(string)
 	return v
 }
 

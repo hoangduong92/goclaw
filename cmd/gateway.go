@@ -242,6 +242,9 @@ func runGateway() {
 				if meta.OriginLocalKey != "" {
 					batchMeta["origin_local_key"] = meta.OriginLocalKey
 				}
+				if meta.OriginSessionKey != "" {
+					batchMeta["origin_session_key"] = meta.OriginSessionKey
+				}
 				msgBus.PublishInbound(bus.InboundMessage{
 					Channel:  "system",
 					SenderID: senderID,
@@ -616,6 +619,9 @@ func runGateway() {
 	if builtinToolsH != nil {
 		server.SetBuiltinToolsHandler(builtinToolsH)
 	}
+
+	// Workspace file serving endpoint
+	server.SetFilesHandler(httpapi.NewFilesHandler(workspace, cfg.Gateway.Token))
 
 	// Seed + apply builtin tool disables
 	if pgStores.BuiltinTools != nil {

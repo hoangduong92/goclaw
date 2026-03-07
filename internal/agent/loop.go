@@ -355,10 +355,12 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 	// This prevents concurrent runs from seeing each other's in-progress messages.
 	// NOTE: pendingMsgs stores TEXT ONLY (no images) to avoid bloating session storage.
 	var pendingMsgs []providers.Message
-	pendingMsgs = append(pendingMsgs, providers.Message{
-		Role:    "user",
-		Content: req.Message,
-	})
+	if !req.HideInput {
+		pendingMsgs = append(pendingMsgs, providers.Message{
+			Role:    "user",
+			Content: req.Message,
+		})
+	}
 
 	// 4. Run LLM iteration loop
 	var loopDetector toolLoopState // detects repeated no-progress tool calls
@@ -668,15 +670,19 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 				}
 			}
 
+			toolResultPayload := map[string]interface{}{
+				"name":     tc.Name,
+				"id":       tc.ID,
+				"is_error": result.IsError,
+			}
+			if result.IsError && result.ForLLM != "" {
+				toolResultPayload["content"] = result.ForLLM
+			}
 			emitRun(AgentEvent{
 				Type:    protocol.AgentEventToolResult,
 				AgentID: l.id,
 				RunID:   req.RunID,
-				Payload: map[string]interface{}{
-					"name":     tc.Name,
-					"id":       tc.ID,
-					"is_error": result.IsError,
-				},
+				Payload: toolResultPayload,
 			})
 
 			l.scanWebToolResult(tc.Name, result)
@@ -797,15 +803,19 @@ func (l *Loop) runLoop(ctx context.Context, req RunRequest) (*RunResult, error) 
 					}
 				}
 
+				parToolResultPayload := map[string]interface{}{
+					"name":     r.tc.Name,
+					"id":       r.tc.ID,
+					"is_error": r.result.IsError,
+				}
+				if r.result.IsError && r.result.ForLLM != "" {
+					parToolResultPayload["content"] = r.result.ForLLM
+				}
 				emitRun(AgentEvent{
 					Type:    protocol.AgentEventToolResult,
 					AgentID: l.id,
 					RunID:   req.RunID,
-					Payload: map[string]interface{}{
-						"name":     r.tc.Name,
-						"id":       r.tc.ID,
-						"is_error": r.result.IsError,
-					},
+					Payload: parToolResultPayload,
 				})
 
 				l.scanWebToolResult(r.tc.Name, r.result)

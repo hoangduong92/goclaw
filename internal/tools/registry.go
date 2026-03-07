@@ -88,6 +88,7 @@ func (r *Registry) ExecuteWithContext(ctx context.Context, name string, args map
 	}
 	if sessionKey != "" {
 		ctx = WithToolSandboxKey(ctx, sessionKey)
+		ctx = WithToolSessionKey(ctx, sessionKey)
 	}
 	if asyncCB != nil {
 		ctx = WithToolAsyncCB(ctx, asyncCB)
